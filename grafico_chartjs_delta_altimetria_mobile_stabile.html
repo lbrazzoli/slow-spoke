@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Δ tempo (G2−G1) vs Altimetria — Chart.js (Mobile stabile)</title>
+<style>
+  :root { --vh: 1vh; }
+  body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:#fff; }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 12px; }
+  h1 { font-size: 20px; margin: 8px 0 10px; font-weight: 700; }
+  .card { background:#fff; border:1px solid #e5e7eb; border-radius: 12px; padding: 10px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+  /* Invece di 70vh uso la variabile --vh (1% dell'altezza "reale") calcolata via JS */
+  #chartWrap { width: 100%; height: calc(var(--vh) * 70); min-height: 320px; }
+  .hint { color:#6b7280; font-size: 12px; margin-top: 8px; }
+  .toolbar { display:flex; gap:8px; flex-wrap:wrap; margin: 8px 0 4px; }
+  .toolbar button { padding:6px 10px; border:1px solid #d1d5db; background:#fff; border-radius:8px; font-size:13px; }
+  .toolbar button:active { transform: scale(0.99); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Δ tempo per segmento (G2−G1) e altimetria — versione mobile stabile</h1>
+  <div class="card">
+    <div class="toolbar">
+      <button id="resetZoom">Reset zoom</button>
+      <button id="showAll">Mostra tutto</button>
+    </div>
+    <div id="chartWrap"><canvas id="chart"></canvas></div>
+    <div class="hint">
+      • Pinch-zoom e pan con le dita • Tocca le barre per i dettagli • Verde = G2 più veloce, Rosso = G2 più lento
+    </div>
+  </div>
+</div>
+
+<script>
+// Fissa una --vh stabile che non oscilli con la barra URL su mobile
+function setVh() {
+  const vh = window.innerHeight * 0.01;
+  document.documentElement.style.setProperty('--vh', vh + 'px');
+}
+setVh();
+let resizeTO;
+window.addEventListener('resize', function() {
+  clearTimeout(resizeTO);
+  resizeTO = setTimeout(setVh, 200);
+});
+window.addEventListener('orientationchange', function() {
+  setTimeout(setVh, 300);
+});
+</script>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1"></script>
+<script>
+const km = [3.887, 4.252, 4.754, 5.253, 5.748, 6.251, 6.754, 7.251, 7.748, 8.251, 8.751, 9.252, 9.752, 10.249, 10.749, 11.251, 11.751, 12.249, 12.75, 13.253, 13.749, 14.245, 14.748, 15.25, 15.75, 16.25, 16.751, 17.252, 17.75, 18.249, 18.751, 19.251, 19.749, 20.248, 20.748, 21.248, 21.747, 22.249, 22.75, 23.248, 23.747, 24.248, 24.748, 25.246, 25.748, 26.258, 26.76, 27.256, 27.769, 28.272, 28.748, 29.251, 29.763, 30.248, 30.747, 31.243, 31.736, 32.241, 32.739, 33.235, 33.752, 34.262, 34.669];
+const deltaSec = [-8, -18, -36, -18, -14, -19, -14, -10, -4, 1, -8, -8, -55, -38, 6, -24, -39, -33, -29, -1, 16, 11, 1, 11, -2, -53, -55, -46, -74, -70, -68, -15, -14, -28, -25, -17, -6, -12, -33, -17, 16, 8, 5, 0, -75, -45, -6, -6, -7, -10, -8, -11, -14, -8, -7, -4, -3, 9, -6, -7, -11, 5, -15];
+const deltaHms = ["-0:00:08", "-0:00:18", "-0:00:36", "-0:00:18", "-0:00:14", "-0:00:19", "-0:00:14", "-0:00:10", "-0:00:04", "+0:00:01", "-0:00:08", "-0:00:08", "-0:00:55", "-0:00:38", "+0:00:06", "-0:00:24", "-0:00:39", "-0:00:33", "-0:00:29", "-0:00:01", "+0:00:16", "+0:00:11", "+0:00:01", "+0:00:11", "-0:00:02", "-0:00:53", "-0:00:55", "-0:00:46", "-0:01:14", "-0:01:10", "-0:01:08", "-0:00:15", "-0:00:14", "-0:00:28", "-0:00:25", "-0:00:17", "-0:00:06", "-0:00:12", "-0:00:33", "-0:00:17", "+0:00:16", "+0:00:08", "+0:00:05", "+0:00:00", "-0:01:15", "-0:00:45", "-0:00:06", "-0:00:06", "-0:00:07", "-0:00:10", "-0:00:08", "-0:00:11", "-0:00:14", "-0:00:08", "-0:00:07", "-0:00:04", "-0:00:03", "+0:00:09", "-0:00:06", "-0:00:07", "-0:00:11", "+0:00:05", "-0:00:15"];
+const elev = [657, 667, 686, 700, 727, 757, 788, 818, 848, 878, 906, 936, 969, 1002, 1029, 1051, 1082, 1112, 1146, 1176, 1204, 1234, 1269, 1301, 1333, 1359, 1382, 1422, 1453, 1484, 1512, 1537, 1570, 1603, 1633, 1663, 1692, 1724, 1758, 1793, 1823, 1836, 1842, 1857, 1864, 1857, 1840, 1834, 1815, 1780, 1748, 1715, 1682, 1650, 1617, 1585, 1552, 1522, 1493, 1464, 1433, 1402, 1380];
+const barColors = ["rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(179,0,0,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(179,0,0,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(179,0,0,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(179,0,0,0.85)", "rgba(0,90,50,0.85)"];
+
+const ctx = document.getElementById('chart').getContext('2d');
+
+const data = {
+  labels: km,
+  datasets: [
+    {
+      type: 'bar',
+      label: 'Δ tempo (s) — G2−G1',
+      data: deltaSec,
+      yAxisID: 'y',
+      backgroundColor: barColors,
+      borderWidth: 0,
+      barPercentage: 0.98,
+      categoryPercentage: 1.0
+    },
+    {
+      type: 'line',
+      label: 'Quota media (m)',
+      data: elev,
+      yAxisID: 'y1',
+      borderColor: 'rgba(31, 78, 121, 0.9)',
+      borderWidth: 2,
+      pointRadius: 0,
+      tension: 0.25
+    }
+  ]
+};
+
+const chart = new Chart(ctx, {
+  data: data,
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    // Evita animazioni che possono provocare "stretch" continuo
+    animation: false,
+    resizeDelay: 200,
+    interaction: { mode: 'index', intersect: false },
+    scales: {
+      x: {
+        title: { display: true, text: 'Distanza [km]' },
+        grid: { color:'rgba(0,0,0,0.06)' }
+      },
+      y: {
+        title: { display: true, text: 'Δ tempo per segmento [s]' },
+        grid: { color:'rgba(0,0,0,0.08)' }
+      },
+      y1: {
+        position: 'right',
+        title: { display: true, text: 'Quota [m]' },
+        grid: { drawOnChartArea: false }
+      }
+    },
+    plugins: {
+      legend: { display: true, labels: { boxWidth: 14 } },
+      tooltip: {
+        callbacks: {
+          title: items => 'Km ' + (Number(items[0].label).toFixed(2)),
+          label: ctx => {
+            if (ctx.datasetIndex === 0) {
+              const hms = deltaHms[ctx.dataIndex];
+              return 'Δ tempo: ' + ctx.formattedValue + ' s ('+ hms +')';
+            } else {
+              return 'Quota media: ' + ctx.formattedValue + ' m';
+            }
+          }
+        }
+      },
+      zoom: {
+        pan: { enabled: true, mode: 'x' },
+        zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'x' }
+      }
+    }
+  }
+});
+
+document.getElementById('resetZoom').onclick = () => chart.resetZoom();
+document.getElementById('showAll').onclick = () => { chart.resetZoom(); chart.update(); };
+</script>
+</body>
+</html>
