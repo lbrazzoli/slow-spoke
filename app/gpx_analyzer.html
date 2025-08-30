@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GPX Analyzer – Bike</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.umd.min.js"></script>
+  <style>
+    body { background: #0b0f14; color: #e5e7eb; }
+    .card { background: #111827; border: 1px solid #1f2937; }
+    .map { height: 360px; }
+    .dropzone { border: 2px dashed #374151; border-radius: 1rem; transition: background .2s, border-color .2s; }
+    .dropzone.dragover { border-color: #60a5fa; background: rgba(96,165,250,.08); }
+    .btn { display:inline-flex; gap:.5rem; align-items:center; padding:.5rem .9rem; border:1px solid #374151; border-radius:.75rem; }
+    .btn:hover { border-color:#60a5fa; }
+    canvas { display:block; max-width:100%; }
+  </style>
+</head>
+<body>
+  <header class="max-w-6xl mx-auto px-4 py-6">
+    <h1 class="text-2xl font-bold">GPX Analyzer – Bike</h1>
+  </header>
+  <main class="max-w-6xl mx-auto px-4 pb-16">
+    <section class="card rounded-2xl p-6 mb-6">
+      <label id="gpxLabel" for="gpxInput" class="btn cursor-pointer">📂 <span>Seleziona file GPX</span></label>
+      <input id="gpxInput" type="file" accept=".gpx,.GPX,application/gpx+xml,application/xml,text/xml" multiple class="hidden" />
+      <div id="dropzone" class="dropzone mt-4 p-6 text-center text-gray-400">
+        Trascina qui i file .gpx oppure usa "Seleziona file GPX".
+        <div id="uifeedback" class="mt-3 text-xs text-gray-500"></div>
+      </div>
+    </section>
+
+    <template id="activity-template">
+      <article class="card rounded-2xl overflow-hidden">
+        <header class="flex items-start justify-between gap-3 p-4 sm:p-6 border-b border-gray-800/60">
+          <div>
+            <h2 class="text-lg sm:text-xl font-semibold" data-role="title">Attività</h2>
+            <p class="text-gray-400 text-sm" data-role="subtitle"></p>
+          </div>
+          <div class="flex items-center gap-2">
+            <button class="btn btn-small" data-role="fit-map">🗺️ Fit mappa</button>
+            <button class="btn btn-small" data-role="reset-all-zoom">🔎 Reset grafici</button>
+          </div>
+        </header>
+        <section class="p-4 sm:p-6">
+          <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4" data-role="metrics"></div>
+        </section>
+        <section class="px-4 sm:px-6 pb-6">
+          <div class="map rounded-xl overflow-hidden border border-gray-800/60" data-role="map"></div>
+        </section>
+        <section class="px-4 sm:px-6 pb-6 space-y-6" data-role="charts">
+          <div>
+            <h3 class="font-semibold mb-2">Profilo altimetrico</h3>
+            <canvas height="220" data-chart="elevation"></canvas>
+          </div>
+          <div>
+            <h3 class="font-semibold mb-2">Velocità</h3>
+            <canvas height="220" data-chart="speed"></canvas>
+          </div>
+          <div>
+            <h3 class="font-semibold mb-2">Heart rate</h3>
+            <canvas height="220" data-chart="hr"></canvas>
+          </div>
+          <div>
+            <h3 class="font-semibold mb-2">Cadenza</h3>
+            <canvas height="220" data-chart="cad"></canvas>
+          </div>
+        </section>
+      </article>
+    </template>
+
+    <section id="activities" class="space-y-8"></section>
+  </main>
+
+  <script>
+  // ===== Utils =====
+  const fmt = {
+    distance(m) { return (m/1000).toFixed(2) + ' km'; },
+    speed(ms) { return (ms*3.6).toFixed(1) + ' km/h'; },
+    duration(sec){ if (!Number.isFinite(sec) || sec < 0) return '—'; const h=Math.floor(sec/3600), m=Math.floor((sec%3600)/60), s=Math.round(sec%60); return [h,m,s].map((v,i)=> i? String(v).padStart(2,'0'): String(v)).join(':'); },
+    date(d){ try { return new Intl.DateTimeFormat('it-IT',{ dateStyle:'medium', timeStyle:'short'}).format(d); } catch { return d.toISOString(); } }
+  };
+
+  const RADIUS = 6371000; const toRad = d=> d*Math.PI/180;
+  function haversine(lat1, lon1, lat2, lon2){
+    const dLat = toRad(lat2-lat1), dLon = toRad(lon2-lon1);
+    const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)**2;
+    return 2*RADIUS*Math.asin(Math.sqrt(a));
+  }
+  function rollingAverage(arr, window=7){
+    if (!arr || !arr.length) return [];
+    const out = new Array(arr.length).fill(NaN), half = Math.floor(window/2);
+    for (let i=0;i<arr.length;i++){
+      let sum=0, n=0;
+      for (let j=i-half;j<=i+half;j++) if (j>=0 && j<arr.length && Number.isFinite(arr[j])) { sum+=arr[j]; n++; }
+      out[i] = n? sum/n : NaN;
+    }
+    return out;
+  }
+  function firstNumericDescendantByLocal(el, names){
+    const it = document.createTreeWalker(el, NodeFilter.SHOW_ELEMENT);
+    let node; while ((node = it.nextNode())){
+      if (names.includes(node.localName)){
+        const v = parseFloat(node.textContent); if (!Number.isNaN(v)) return v;
+      }
+    } return null;
+  }
+  const averageOf = nums => { const v=nums.filter(Number.isFinite); return v.length? v.reduce((a,b)=>a+b,0)/v.length : NaN; };
+
+  // ===== parseGpx =====
+  function parseGpx(text){
+    const parser = new DOMParser(); const xml = parser.parseFromString(text, 'application/xml');
+    const parserErr = xml.querySelector('parsererror'); if (parserErr) throw new Error('XML non valido');
+    const trkpts = Array.from(xml.getElementsByTagName('trkpt')); if (!trkpts.length) throw new Error('Nessun trkpt nel GPX');
+    const lat=[], lon=[], ele=[], time=[], hr=[], cad=[]; const GPXTPX_NS='http://www.garmin.com/xmlschemas/TrackPointExtension/v1';
+    trkpts.forEach(pt=>{
+      lat.push(parseFloat(pt.getAttribute('lat')));
+      lon.push(parseFloat(pt.getAttribute('lon')));
+      const eN = pt.getElementsByTagName('ele')[0]; ele.push(eN? parseFloat(eN.textContent): NaN);
+      const tN = pt.getElementsByTagName('time')[0]; time.push(tN? new Date(tN.textContent).getTime()/1000: NaN);
+      let hrNode=null; try { hrNode = pt.getElementsByTagNameNS(GPXTPX_NS,'hr')[0] || pt.getElementsByTagName('hr')[0]; } catch { hrNode = pt.getElementsByTagName('hr')[0]; }
+      if (!hrNode){ const any=pt.getElementsByTagName('*'); for (let i=0;i<any.length;i++){ if (any[i].localName==='hr'){ hrNode=any[i]; break; } } }
+      let hrVal = hrNode? parseFloat(hrNode.textContent): NaN; if (!Number.isFinite(hrVal)) hrVal = firstNumericDescendantByLocal(pt,['hr']); hr.push(Number.isFinite(hrVal)? hrVal: NaN);
+      let cadNode=null; try { cadNode = pt.getElementsByTagNameNS(GPXTPX_NS,'cad')[0] || pt.getElementsByTagName('cad')[0] || pt.getElementsByTagName('cadence')[0]; } catch { cadNode = pt.getElementsByTagName('cad')[0] || pt.getElementsByTagName('cadence')[0]; }
+      if (!cadNode){ const any2=pt.getElementsByTagName('*'); for (let i=0;i<any2.length;i++){ if (any2[i].localName==='cad'|| any2[i].localName==='cadence'){ cadNode=any2[i]; break; } } }
+      let cadVal = cadNode? parseFloat(cadNode.textContent): NaN; if (!Number.isFinite(cadVal)) cadVal = firstNumericDescendantByLocal(pt,['cad','cadence']); cad.push(Number.isFinite(cadVal)? cadVal: NaN);
+    });
+    const dist = new Array(lat.length).fill(0); for (let i=1;i<lat.length;i++) dist[i] = dist[i-1] + haversine(lat[i-1],lon[i-1],lat[i],lon[i]);
+    const speed = new Array(lat.length).fill(NaN); for (let i=1;i<lat.length;i++){ const dt=time[i]-time[i-1]; const dd=dist[i]-dist[i-1]; speed[i] = (dt>0 && Number.isFinite(dd))? dd/dt: NaN; } speed[0]=speed[1];
+    const speedSmooth = rollingAverage(speed,7);
+    let ascent=0, descent=0; for (let i=1;i<ele.length;i++){ const d=ele[i]-ele[i-1]; if (!Number.isFinite(d)) continue; if (d>0.8) ascent+=d; else if (d<-0.8) descent+=-d; }
+    const startT = time.find(t=>Number.isFinite(t)), endT=[...time].reverse().find(t=>Number.isFinite(t));
+    const elapsed = (Number.isFinite(startT)&&Number.isFinite(endT))? (endT-startT): NaN;
+    let moving=0; const thr=1.0; for (let i=1;i<time.length;i++){ const dt=time[i]-time[i-1]; if (dt>0 && Number.isFinite(speedSmooth[i]) && speedSmooth[i]>thr) moving+=dt; }
+    const totalDist = dist[dist.length-1]; const avgSpeed = (Number.isFinite(moving)&&moving>0)? totalDist/moving: NaN; const maxSpeed = speedSmooth.reduce((m,v)=> Number.isFinite(v)? Math.max(m,v): m, 0);
+    const hrAvg=averageOf(hr), hrMax=hr.reduce((m,v)=> Number.isFinite(v)? Math.max(m,v): m, Number.NEGATIVE_INFINITY);
+    const cadAvg=averageOf(cad), cadMax=cad.reduce((m,v)=> Number.isFinite(v)? Math.max(m,v): m, Number.NEGATIVE_INFINITY);
+    return { points:{lat,lon,ele,time,hr,cad,dist,speed,speedSmooth}, summary:{ date:Number.isFinite(startT)? new Date(startT*1000): new Date(), elapsed, moving, distance: totalDist, avgSpeed, maxSpeed, ascent, descent, hrAvg, hrMax:Number.isFinite(hrMax)?hrMax:NaN, cadAvg, cadMax:Number.isFinite(cadMax)?cadMax:NaN } };
+  }
+
+  // ===== Rendering =====
+  const activitiesEl = document.getElementById('activities');
+  const tpl = document.getElementById('activity-template');
+  function makeMetric(label, value){ const el=document.createElement('div'); el.className='rounded-xl border border-gray-800/60 p-3 sm:p-4'; el.innerHTML=`<div class="text-gray-400 text-sm">${label}</div><div class="font-semibold mt-0.5">${value}</div>`; return el; }
+
+  if (window['chartjs-plugin-zoom']) { try { Chart.register(window['chartjs-plugin-zoom']); } catch {} }
+
+  function createActivityCard(filename, gpx){
+    const fragment = tpl.content.cloneNode(true);
+    const title = fragment.querySelector('[data-role="title"]');
+    const subtitle = fragment.querySelector('[data-role="subtitle"]');
+    const metricsWrap = fragment.querySelector('[data-role="metrics"]');
+    const mapDiv = fragment.querySelector('[data-role="map"]');
+    const chartsWrap = fragment.querySelector('[data-role="charts"]');
+    const fitBtn = fragment.querySelector('[data-role="fit-map"]');
+    const resetBtn = fragment.querySelector('[data-role="reset-all-zoom"]');
+
+    const { summary, points } = gpx;
+    title.textContent = filename; subtitle.textContent = fmt.date(summary.date);
+
+    metricsWrap.append(
+      makeMetric('Data', fmt.date(summary.date)),
+      makeMetric('Elapsed time', fmt.duration(summary.elapsed)),
+      makeMetric('Moving time', fmt.duration(summary.moving)),
+      makeMetric('Distanza', fmt.distance(summary.distance)),
+      makeMetric('Velocità media', Number.isFinite(summary.avgSpeed)? fmt.speed(summary.avgSpeed): 'N/A'),
+      makeMetric('Velocità massima', Number.isFinite(summary.maxSpeed)? fmt.speed(summary.maxSpeed): 'N/A'),
+      makeMetric('Ascesa totale', Math.round(summary.ascent)+' m'),
+      makeMetric('Discesa totale', Math.round(summary.descent)+' m'),
+      makeMetric('Heart rate medio', Number.isFinite(summary.hrAvg)? Math.round(summary.hrAvg)+' bpm': 'N/A'),
+      makeMetric('Heart rate massimo', Number.isFinite(summary.hrMax)? Math.round(summary.hrMax)+' bpm': 'N/A'),
+      makeMetric('Cadenza media', Number.isFinite(summary.cadAvg)? Math.round(summary.cadAvg)+' rpm': 'N/A'),
+      makeMetric('Cadenza massima', Number.isFinite(summary.cadMax)? Math.round(summary.cadMax)+' rpm': 'N/A'),
+    );
+
+    // Append BEFORE map/charts
+    activitiesEl.appendChild(fragment);
+
+    // Map
+    const map = L.map(mapDiv, { zoomControl:true, scrollWheelZoom:true });
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OSM contrib.' }).addTo(map);
+    const latlngs = points.lat.map((la,i)=> [la, points.lon[i]]);
+    const track = L.polyline(latlngs, { color:'#3b82f6', weight:4, opacity:0.9 }).addTo(map);
+    L.circleMarker(latlngs[0], { radius:5, color:'#10b981', fillColor:'#10b981', fillOpacity:1 }).addTo(map);
+    L.circleMarker(latlngs[latlngs.length-1], { radius:5, color:'#ef4444', fillColor:'#ef4444', fillOpacity:1 }).addTo(map);
+    const hoverMarker = L.circleMarker(latlngs[0], { radius:6, color:'#f59e0b', fillColor:'#f59e0b', fillOpacity:1 }).addTo(map);
+    map.fitBounds(track.getBounds(), { padding:[20,20] }); setTimeout(()=> map.invalidateSize(), 0);
+    if (fitBtn) fitBtn.addEventListener('click', ()=> map.fitBounds(track.getBounds(), { padding:[20,20] }));
+
+    // Charts (non responsive; manual width + ResizeObserver)
+    const xKm = points.dist.map(m => +(m/1000).toFixed(3));
+    const elevationData = points.ele.map(v => Number.isFinite(v)? v : null);
+    const speedKmh      = points.speedSmooth.map(v => Number.isFinite(v)? v*3.6 : null);
+    const hrData        = points.hr.map(v => Number.isFinite(v)? v : null);
+    const cadData       = points.cad.map(v => Number.isFinite(v)? v : null);
+    const charts = [];
+
+    function commonOptions(){
+      return {
+        responsive:false,
+        maintainAspectRatio:false,
+        animation:false,
+        interaction:{ mode:'index', intersect:false },
+        plugins:{ legend:{ display:false }, zoom:{ pan:{ enabled:true, mode:'x' }, zoom:{ wheel:{ enabled:true }, pinch:{ enabled:true }, mode:'x' } }, tooltip:{ callbacks:{ title:(ctx)=> ctx[0]? ctx[0].label+' km' : '' } } },
+        scales:{ x:{ title:{ display:true, text:'Distanza (km)' } } },
+        onHover:(evt,elements)=>{ if(elements && elements.length){ const idx=elements[0].index; if (latlngs[idx]) hoverMarker.setLatLng(latlngs[idx]); } }
+      };
+    }
+
+    function makeChart(canvas, data, label){
+      const parent = canvas.parentElement;
+      let w = (parent && parent.clientWidth) ? parent.clientWidth : 600;
+      canvas.width = w;
+      canvas.style.width = w+'px';
+      const ctx = canvas.getContext('2d');
+      const chart = new Chart(ctx, {
+        type:'line',
+        data:{ labels:xKm, datasets:[{ label, data, borderWidth:2, pointRadius:0, tension:0.15 }] },
+        options: commonOptions()
+      });
+      charts.push(chart);
+
+      // Resize adattivo solo on-resize, con debounce
+      let t;
+      window.addEventListener('resize', ()=>{
+        clearTimeout(t);
+        t=setTimeout(()=>{
+          const nw = (parent && parent.clientWidth) ? parent.clientWidth : w;
+          if (nw && nw !== w){
+            w=nw;
+            canvas.width = w;
+            canvas.style.width = w+'px';
+            chart.resize();
+          }
+        }, 150);
+      });
+
+      return chart;
+    }
+
+    const canvElev = chartsWrap.querySelector('canvas[data-chart="elevation"]');
+    const canvSpeed= chartsWrap.querySelector('canvas[data-chart="speed"]');
+    const canvHr   = chartsWrap.querySelector('canvas[data-chart="hr"]');
+    const canvCad  = chartsWrap.querySelector('canvas[data-chart="cad"]');
+    makeChart(canvElev, elevationData, 'Altitudine (m)');
+    makeChart(canvSpeed, speedKmh, 'Velocità (km/h)');
+    if (hrData.some(v=>v!==null)) makeChart(canvHr, hrData, 'HR (bpm)'); else canvHr.parentElement.style.display='none';
+    if (cadData.some(v=>v!==null)) makeChart(canvCad, cadData, 'Cadenza (rpm)'); else canvCad.parentElement.style.display='none';
+
+    if (resetBtn) resetBtn.addEventListener('click', ()=> charts.forEach(c=> c.resetZoom()));
+    return fragment;
+  }
+
+  // ===== File handlers =====
+  async function handleFiles(fileList){
+    const ui = document.getElementById('uifeedback');
+    if (!fileList || !fileList.length){ if (ui) ui.textContent='Nessun file rilevato.'; return; }
+    let processed=0, skipped=0;
+    for (const f of fileList){
+      const isGpx = /\.gpx$/i.test(f.name) || (f.type && /gpx|xml/.test(f.type));
+      if (!isGpx){ skipped++; continue; }
+      const text = await f.text();
+      try { const gpx = parseGpx(text); createActivityCard(f.name.replace(/\.[Gg][Pp][Xx]$/, ''), gpx); processed++; }
+      catch(e){ console.error(e); if (ui) ui.textContent = `Errore parsing ${f.name}: ${e.message}`; }
+    }
+    if (ui) ui.textContent = processed ? `Caricati ${processed} file GPX${skipped? `, ${skipped} ignorati`: ''}.` : 'Nessun GPX valido trovato.';
+    window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+  }
+
+  // ===== Wiring =====
+  document.addEventListener('DOMContentLoaded', () => {
+    const fileInput = document.getElementById('gpxInput');
+    const fileLabel = document.getElementById('gpxLabel');
+    const dropzone  = document.getElementById('dropzone');
+    const ui        = document.getElementById('uifeedback');
+
+    const hasFiles = (e) => { const dt=e.dataTransfer; if (!dt) return false; const types=dt.types; if (!types) return true; return Array.from(types).includes('Files'); };
+
+    if (fileLabel && fileInput){
+      fileLabel.addEventListener('click', e => { e.preventDefault(); fileInput.click(); });
+      fileInput.addEventListener('change', e => { const files=e.target.files; if (ui) ui.textContent = files&&files.length? `Lettura ${files.length} file…` : 'Nessun file selezionato.'; handleFiles(files); e.target.value=''; });
+    }
+
+    ['dragover','drop'].forEach(ev => { window.addEventListener(ev, e=> e.preventDefault(), false); document.addEventListener(ev, e=> e.preventDefault(), false); });
+    document.addEventListener('dragenter', e=>{ if (!dropzone) return; if (!hasFiles(e)) return; dropzone.classList.add('dragover'); });
+    document.addEventListener('dragover',  e=>{ if (!dropzone) return; if (!hasFiles(e)) return; if (e.dataTransfer) e.dataTransfer.dropEffect='copy'; dropzone.classList.add('dragover'); });
+    document.addEventListener('dragleave', e=>{ if (!dropzone) return; if (e.target===document || (e.clientX===0 && e.clientY===0)) dropzone.classList.remove('dragover'); });
+    document.addEventListener('drop',      ()=>{ if (dropzone) dropzone.classList.remove('dragover'); });
+
+    if (dropzone){
+      dropzone.addEventListener('dragenter', e=> { e.preventDefault(); e.stopPropagation(); dropzone.classList.add('dragover'); });
+      dropzone.addEventListener('dragover',  e=> { e.preventDefault(); e.stopPropagation(); if (e.dataTransfer) e.dataTransfer.dropEffect='copy'; dropzone.classList.add('dragover'); });
+      dropzone.addEventListener('dragleave', e=> { e.preventDefault(); e.stopPropagation(); dropzone.classList.remove('dragover'); });
+      dropzone.addEventListener('drop',      e=> { e.preventDefault(); e.stopPropagation(); dropzone.classList.remove('dragover'); const files=e.dataTransfer&&e.dataTransfer.files? e.dataTransfer.files: null; if (ui) ui.textContent = files&&files.length? `Rilasciati ${files.length} file…` : 'Nessun file rilasciato.'; if (files&&files.length) handleFiles(files); });
+    }
+  });
+
+  // ===== Self-tests =====
+  (function runSelfTests(){
+    const log = (m)=> console.log('%c[TEST]', 'color:#10b981', m);
+    const err = (m)=> console.error('%c[TEST]', 'color:#ef4444', m);
+    const ui = document.getElementById('uifeedback');
+    try {
+      const sample = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx xmlns="http://www.topografix.com/GPX/1/1" version="1.1" creator="selftest" xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v1">
+<trk><name>Test</name><trkseg>
+<trkpt lat="45.000000" lon="7.000000"><ele>100</ele><time>2025-01-01T00:00:00Z</time><extensions><gpxtpx:TrackPointExtension><gpxtpx:hr>100</gpxtpx:hr><gpxtpx:cad>80</gpxtpx:cad></gpxtpx:TrackPointExtension></extensions></trkpt>
+<trkpt lat="45.008983" lon="7.000000"><ele>110</ele><time>2025-01-01T00:04:00Z</time><extensions><gpxtpx:TrackPointExtension><gpxtpx:hr>110</gpxtpx:hr><gpxtpx:cad>85</gpxtpx:cad></gpxtpx:TrackPointExtension></extensions></trkpt>
+</trkseg></trk></gpx>`;
+      const gpx = parseGpx(sample); const s=gpx.summary; const approx=(v,t,tol)=> Math.abs(v-t)<=tol; let ok=true;
+      if (!approx(s.distance, 1000, 60)) { ok=false; err(`Distanza ~1000m, ottenuta ${s.distance.toFixed(1)}`); }
+      if (!approx(s.moving, 240, 2))    { ok=false; err(`Moving ~240s, ottenuto ${s.moving}`); }
+      if (!approx(s.avgSpeed*3.6, 15, 1.2)) { ok=false; err(`Vel media ~15km/h, ottenuta ${(s.avgSpeed*3.6).toFixed(2)}`); }
+      if (!approx(s.ascent, 10, 1))     { ok=false; err(`Ascesa ~10m, ottenuta ${s.ascent}`); }
+      if (!approx(Math.round(s.hrAvg), 105, 2)) { ok=false; err(`HR medio ~105, ottenuto ${s.hrAvg}`); }
+      if (!approx(s.hrMax, 110, 0.1))   { ok=false; err(`HR max 110, ottenuto ${s.hrMax}`); }
+      if (!approx(Math.round(s.cadAvg), 83, 2)) { ok=false; err(`Cad media ~83, ottenuta ${s.cadAvg}`); }
+      if (!approx(s.cadMax, 85, 0.1))   { ok=false; err(`Cad max 85, ottenuta ${s.cadMax}`); }
+      if (ok){ log('Self-tests OK ✅'); if (ui) ui.textContent = (ui.textContent? ui.textContent + ' — ' : '') + 'Self-tests OK ✅'; }
+    } catch (e){ err('Self-tests FAILED ❌ ' + e.message); if (ui) ui.textContent = 'Self-tests FAILED ❌ ' + e.message; }
+  })();
+</script>
+</body>
+</html>
