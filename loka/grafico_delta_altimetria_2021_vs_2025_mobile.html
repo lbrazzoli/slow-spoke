@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"/>
+<title>Δ tempo (G2−G1) vs Altimetria — Mobile</title>
+<style>
+  :root { --vh: 1vh; }
+  html, body { height: 100%; }
+  body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:#fff; }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 12px; }
+  h1 { font-size: 20px; margin: 8px 0 10px; font-weight: 700; }
+  .card { background:#fff; border:1px solid #e5e7eb; border-radius: 12px; padding: 10px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+  #chartWrap { width: 100%; height: calc(var(--vh) * 80); min-height: 360px; }
+  #chart { touch-action: none; }
+  .toolbar { display:flex; gap:8px; flex-wrap:wrap; margin: 8px 0 8px; }
+  .toolbar button { padding:8px 10px; border:1px solid #d1d5db; background:#fff; border-radius:10px; font-size:14px; }
+  .toolbar button:active { transform: scale(0.99); }
+  .fab-wrap { position: fixed; bottom: 16px; right: 12px; z-index: 10000; display: flex; flex-direction: column; gap: 10px; }
+  .fab { width: 48px; height: 48px; border-radius: 50%; border: none; background: #111; color:#fff; font-weight:700; box-shadow: 0 3px 8px rgba(0,0,0,0.25); }
+  .sheet { position: fixed; bottom: 0; left: 0; right: 0; z-index: 10001; transform: translateY(100%); transition: transform .25s ease; }
+  .sheet.hidden { transform: translateY(100%); }
+  .sheet .sheet-inner { background:#fff; border-top-left-radius:16px; border-top-right-radius:16px; border:1px solid #ddd; padding: 12px; box-shadow: 0 -3px 12px rgba(0,0,0,0.12); }
+  .sheet-title { font-weight:700; margin-bottom:8px; }
+  .sheet-actions button { padding:8px 10px; border:1px solid #ddd; background:#fff; border-radius:10px; margin-right:8px; margin-top:6px; }
+  .hint { color:#6b7280; font-size: 12px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Δ tempo per segmento (G2−G1) e altimetria — versione mobile</h1>
+  <div class="card">
+    <div class="toolbar">
+      <button id="resetZoom">Reset</button>
+      <button id="showAll">Mostra tutto</button>
+      <button id="openExport">Export</button>
+    </div>
+    <div id="chartWrap"><canvas id="chart"></canvas></div>
+    <div class="hint">Pinch/drag per zoomare solo sul grafico • Tocca le barre per i dettagli • Verde = G2 più veloce, Rosso = G2 più lento</div>
+  </div>
+</div>
+
+<div class="fab-wrap">
+  <button class="fab" id="openExportFab">⇩</button>
+</div>
+<div id="sheet" class="sheet hidden">
+  <div class="sheet-inner">
+    <div class="sheet-title">Esporta dati</div>
+    <div class="sheet-actions">
+      <button id="btn-json">JSON</button>
+      <button id="btn-csv">CSV</button>
+      <button id="btn-xls">XLS</button>
+      <button id="btn-close">Chiudi</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  function setVh() {
+    const vh = window.innerHeight * 0.01;
+    document.documentElement.style.setProperty('--vh', vh + 'px');
+  }
+  setVh();
+  let resizeTO;
+  window.addEventListener('resize', function(){ clearTimeout(resizeTO); resizeTO=setTimeout(setVh, 200); });
+  window.addEventListener('orientationchange', function(){ setTimeout(setVh, 300); });
+</script>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1"></script>
+<script>
+const km = [0.149, 1.638, 2.989, 3.25, 3.751, 4.252, 4.751, 5.25, 5.749, 6.249, 6.749, 7.249, 7.75, 8.251, 8.751, 9.25, 9.75, 10.25, 10.749, 11.249, 11.75, 12.25, 12.75, 13.251, 13.751, 14.25, 14.749, 15.249, 15.75, 16.249, 16.749, 17.252, 17.75, 18.25, 18.75, 19.25, 19.75, 20.25, 20.751, 21.251, 21.751, 22.251, 22.751, 23.251, 23.752, 24.25, 24.758, 25.255, 25.747, 26.252, 26.752, 27.272, 27.77, 28.246, 28.739, 29.266, 29.774, 30.248, 30.748, 31.253, 31.752, 32.289, 32.766, 33.191, 33.712, 34.249, 34.724];
+const deltaSec = [1, 141, 1, 44, 19, 23, 20, 21, 27, 22, 18, 20, 23, 12, 31, 30, 15, 15, 16, 24, 17, 34, 16, 17, 27, 21, 18, 33, 29, 170, 22, 38, 14, 27, 30, 38, 56, 46, 36, 50, 56, 57, 46, 53, 27, 22, 12, -30, -34, -16, 2, 2, 1, 2, 0, 3, 0, 1, -2, 14, 9, 16, 0, -2, 2, 16, 19];
+const deltaHms = ["+0:00:01", "+0:02:21", "+0:00:01", "+0:00:44", "+0:00:19", "+0:00:23", "+0:00:20", "+0:00:21", "+0:00:27", "+0:00:22", "+0:00:18", "+0:00:20", "+0:00:23", "+0:00:12", "+0:00:31", "+0:00:30", "+0:00:15", "+0:00:15", "+0:00:16", "+0:00:24", "+0:00:17", "+0:00:34", "+0:00:16", "+0:00:17", "+0:00:27", "+0:00:21", "+0:00:18", "+0:00:33", "+0:00:29", "+0:02:50", "+0:00:22", "+0:00:38", "+0:00:14", "+0:00:27", "+0:00:30", "+0:00:38", "+0:00:56", "+0:00:46", "+0:00:36", "+0:00:50", "+0:00:56", "+0:00:57", "+0:00:46", "+0:00:53", "+0:00:27", "+0:00:22", "+0:00:12", "-0:00:30", "-0:00:34", "-0:00:16", "+0:00:02", "+0:00:02", "+0:00:01", "+0:00:02", "+0:00:00", "+0:00:03", "+0:00:00", "+0:00:01", "-0:00:02", "+0:00:14", "+0:00:09", "+0:00:16", "+0:00:00", "-0:00:02", "+0:00:02", "+0:00:16", "+0:00:19"];
+const elev = [656, 690, 718, 725, 738, 755, 772, 794, 824, 855, 885, 914, 945, 974, 1003, 1036, 1069, 1101, 1120, 1149, 1179, 1212, 1245, 1271, 1302, 1334, 1368, 1398, 1426, 1452, 1482, 1518, 1549, 1578, 1605, 1635, 1666, 1698, 1728, 1758, 1787, 1820, 1855, 1888, 1910, 1916, 1927, 1941, 1941, 1928, 1915, 1909, 1891, 1857, 1823, 1790, 1759, 1730, 1698, 1669, 1637, 1604, 1580, 1554, 1522, 1487, 1462];
+const barColors = ["rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(0,90,50,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(0,90,50,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(0,90,50,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)", "rgba(179,0,0,0.85)"];
+
+const ctx = document.getElementById('chart').getContext('2d');
+
+const data = {
+  labels: km,
+  datasets: [
+    {
+      type: 'bar',
+      label: 'Δ tempo (s) — G2−G1',
+      data: deltaSec,
+      yAxisID: 'y',
+      backgroundColor: barColors,
+      borderWidth: 0,
+      barPercentage: 0.98,
+      categoryPercentage: 1.0
+    },
+    {
+      type: 'line',
+      label: 'Quota media (m)',
+      data: elev,
+      yAxisID: 'y1',
+      borderColor: 'rgba(31, 78, 121, 0.9)',
+      borderWidth: 2,
+      pointRadius: 0,
+      tension: 0.25
+    }
+  ]
+};
+
+const chart = new Chart(ctx, {
+  data: data,
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: false,
+    resizeDelay: 200,
+    interaction: { mode: 'index', intersect: false },
+    scales: {
+      x: { title: { display: true, text: 'Distanza [km]' }, grid: { color:'rgba(0,0,0,0.06)' } },
+      y: { title: { display: true, text: 'Δ tempo per segmento [s]' }, grid: { color:'rgba(0,0,0,0.08)' } },
+      y1: { position: 'right', title: { display: true, text: 'Quota [m]' }, grid: { drawOnChartArea: false } }
+    },
+    plugins: {
+      legend: { display: true, labels: { boxWidth: 14 } },
+      tooltip: {
+        callbacks: {
+          title: items => 'Km ' + (Number(items[0].label).toFixed(2)),
+          label: ctx => {
+            if (ctx.datasetIndex === 0) {
+              const hms = deltaHms[ctx.dataIndex];
+              return 'Δ tempo: ' + ctx.formattedValue + ' s ('+ hms +')';
+            } else {
+              return 'Quota media: ' + ctx.formattedValue + ' m';
+            }
+          }
+        }
+      },
+      zoom: {
+        pan: { enabled: true, mode: 'x' },
+        zoom: {
+          pinch: { enabled: true },
+          drag: { enabled: true, backgroundColor: 'rgba(31,78,121,0.15)' },
+          mode: 'x',
+          wheel: { enabled: false }
+        }
+      }
+    }
+  }
+});
+
+document.getElementById('resetZoom').onclick = () => chart.resetZoom();
+document.getElementById('showAll').onclick = () => { chart.resetZoom(); chart.update(); };
+
+// Export
+function download(filename, content, mime) {
+  var blob = new Blob([content], {type: mime});
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url; a.download = filename; document.body.appendChild(a); a.click();
+  document.body.removeChild(a); URL.revokeObjectURL(url);
+}
+function toCSV() {
+  var header = ['km','delta_s','delta_hms','elev_mean_m'];
+  var rows = [header.join(',')];
+  for (let i=0;i<km.length;i++) {
+    rows.push([km[i], deltaSec[i], deltaHms[i], elev[i]].join(','));
+  }
+  return rows.join('\n');
+}
+function toXLS() {
+  var header = ['km','delta_s','delta_hms','elev_mean_m'];
+  var html = '<table><tr>' + header.map(h=>'<'+'th>'+h+'</th>').join('') + '</tr>';
+  for (let i=0;i<km.length;i++) {
+    html += '<tr>' + [km[i], deltaSec[i], deltaHms[i], elev[i]].map(v=>'<'+'td>'+v+'</td>').join('') + '</tr>';
+  }
+  html += '</table>'; return html;
+}
+
+const sheet = document.getElementById('sheet');
+document.getElementById('openExport').onclick = () => { sheet.classList.remove('hidden'); sheet.style.transform='translateY(0)'; };
+document.getElementById('openExportFab').onclick = () => { sheet.classList.remove('hidden'); sheet.style.transform='translateY(0)'; };
+document.getElementById('btn-close').onclick = () => sheet.classList.add('hidden');
+document.getElementById('btn-json').onclick = () => download('delta_altimetria_2021_vs_2025.json', JSON.stringify({km, deltaSec, deltaHms, elev}), 'application/json');
+document.getElementById('btn-csv').onclick  = () => download('delta_altimetria_2021_vs_2025.csv', toCSV(), 'text/csv');
+document.getElementById('btn-xls').onclick  = () => { 
+  var html = toXLS(); 
+  var blob = new Blob([html], {type: 'application/vnd.ms-excel'});
+  var url = URL.createObjectURL(blob); 
+  var a = document.createElement('a'); a.href = url; a.download = 'delta_altimetria_2021_vs_2025.xls'; 
+  document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+};
+</script>
+</body>
+</html>
